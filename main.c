@@ -1,81 +1,80 @@
-//varianta LINUX
+//varianta windows
+#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/mman.h>
-#include <semaphore.h>
 #include <time.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 
 #define MAX_VALUE 1000
-#define SHARED_MEM_NAME "/shared_counter"
-#define SEMAPHORE_NAME "/counter_semaphore"
+#define SHARED_MEM_NAME "Local\\SharedCounter"
+#define SEMAPHORE_NAME "Local\\CounterSemaphore"
 
 int main() {
-    srand(time(NULL) ^ getpid());
+    srand((unsigned int)time(NULL) ^ GetCurrentProcessId());
 
-    // Semafor POSIX inter-proces
-    sem_t *sem = sem_open(SEMAPHORE_NAME, O_CREAT, 0666, 1);
-    if (sem == SEM_FAILED) {
-        perror("sem_open");
-        exit(1);
+    // Creare/obținere semafor inter-proces
+    HANDLE hSem = CreateSemaphoreA(
+        NULL, 1, 1, SEMAPHORE_NAME
+    );
+    if (hSem == NULL) {
+        printf("CreateSemaphore failed (%lu)\n", GetLastError());
+        return 1;
     }
 
-    //  Memorie partajata
-    int shm_fd = shm_open(SHARED_MEM_NAME, O_CREAT | O_RDWR, 0666);
-    if (shm_fd == -1) {
-        perror("shm_open");
-        exit(1);
+    // Creare/obținere memorie partajată
+    HANDLE hMapFile = CreateFileMappingA(
+        INVALID_HANDLE_VALUE,
+        NULL,
+        PAGE_READWRITE,
+        0,
+        sizeof(int),
+        SHARED_MEM_NAME
+    );
+    if (hMapFile == NULL) {
+        printf("CreateFileMapping failed (%lu)\n", GetLastError());
+        return 1;
     }
 
-    // Setam dimensiunea memoriei
-    if (ftruncate(shm_fd, sizeof(int)) == -1) {
-        perror("ftruncate");
-        exit(1);
+    int* shared = (int*)MapViewOfFile(
+        hMapFile,
+        FILE_MAP_ALL_ACCESS,
+        0, 0, sizeof(int)
+    );
+    if (shared == NULL) {
+        printf("MapViewOfFile failed (%lu)\n", GetLastError());
+        return 1;
     }
 
-    // Mapam memoria
-    int *shared = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE,
-                       MAP_SHARED, shm_fd, 0);
-    if (shared == MAP_FAILED) {
-        perror("mmap");
-        exit(1);
-    }
-
-    // Initializare valoare doar daca e 0
+    // Inițializează memoria doar dacă valoarea este 0
     if (*shared == 0) *shared = 0;
 
-    //Loop principal
+    // Loop principal
     while (1) {
-        sem_wait(sem); // intrare sectiune critica
+        WaitForSingleObject(hSem, INFINITE);
 
         int val = *shared;
-
         if (val >= MAX_VALUE) {
-            sem_post(sem);
+            ReleaseSemaphore(hSem, 1, NULL);
             break;
         }
 
-        printf("[PID %d] citeste: %d\n", getpid(), val);
+        printf("[PID %lu] citeste: %d\n", GetCurrentProcessId(), val);
 
-        // Aruncam banul: cat timp cade 1, incrementam
+        // Aruncăm banul (0 sau 1). Cât timp 1, incrementăm
         while ((rand() % 2 == 1) && val < MAX_VALUE) {
             val++;
             *shared = val;
-            printf("[PID %d] scrie: %d\n", getpid(), val);
-            usleep(20000); // 20ms
+            printf("[PID %lu] scrie: %d\n",
+                   GetCurrentProcessId(), val);
+            Sleep(20);
         }
 
-        sem_post(sem); //iesire sectiune critica
-        usleep(30000);  // pauza scurtă
+        ReleaseSemaphore(hSem, 1, NULL);
+        Sleep(30);
     }
 
-    // Cleaning
-    munmap(shared, sizeof(int));
-    close(shm_fd);
-    sem_close(sem);
+    UnmapViewOfFile(shared);
+    CloseHandle(hMapFile);
+    CloseHandle(hSem);
 
     return 0;
 }
